@@ -350,7 +350,16 @@ def process_articles():
                 "sentiment_analysis": [sentiment],
                 "original_id": article["_id"]
             }
-
+            
+            # Skip if already processed by link
+            if processed_collection.find_one({"link": base_doc["link"]}):
+                logging.info(f"Skipping duplicate: {base_doc['link']}")
+                raw_collection.update_one(
+                    {"_id": article["_id"]},
+                    {"$set": {"processing_status": "duplicate"}}
+                )
+                continue
+            
             processed_collection.insert_one(base_doc)
 
             raw_collection.update_one(

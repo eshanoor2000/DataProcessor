@@ -337,7 +337,7 @@ def process_articles():
                 "published_date": article.get("published_date", ""),
                 "content": content,
                 "tags": article.get("tags", []),
-                "source": article.get("source", ""),
+                "source": "RSS Feeds" if article.get("source", "").strip().lower() == "rss" else article.get("source", ""),
                 "subreddit": article.get("subreddit", None),
                 "upvotes": article.get("upvotes", None),
                 "comments": article.get("comments", None),

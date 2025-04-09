@@ -1,0 +1,8 @@
+nltk
+torch
+transformers
+sentence-transformers
+pymongo
+psutil
+python-dotenv
+rapidfuzz

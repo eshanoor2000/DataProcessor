@@ -15,6 +15,10 @@ import gc
 import psutil
 import pymongo
 from pymongo.errors import BulkWriteError
+import smtplib
+from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 # Logging Configuration
 def configure_logging():
@@ -394,6 +398,14 @@ def send_success_email(processed_count):
 
 def send_error_email(error_message):
     send_email("Processing Script Encountered an Error", f"The processing script encountered an error:\n\n{error_message}")
+
+def validate_db_connection():
+    try:
+        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client.server_info()  # Force connection
+        logging.info("MongoDB connection validated.")
+    except Exception as e:
+        raise RuntimeError(f"MongoDB connection failed: {e}")
 
 # Main function
 if __name__ == "__main__":

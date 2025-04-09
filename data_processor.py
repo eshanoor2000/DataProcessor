@@ -332,6 +332,28 @@ def process_articles():
             title = clean_text(article.get("title", ""))
             content = clean_text(article.get("content", ""))
             text_to_analyze = f"{title} {content}"
+
+            # Check for duplicate in raw collection (excluding self)
+            if raw_collection.find_one({
+                "link": article.get("link"),
+                "_id": {"$ne": article["_id"]}
+            }):
+                logging.info(f"Duplicate found in raw collection: {article.get('link')}")
+                raw_collection.update_one(
+                    {"_id": article["_id"]},
+                    {"$set": {"processing_status": "duplicate"}}
+                )
+                continue
+
+            # Check for duplicate in processed collection
+            if processed_collection.find_one({"link": article.get("link")}):
+                logging.info(f"Skipping duplicate in processed: {article.get('link')}")
+                raw_collection.update_one(
+                    {"_id": article["_id"]},
+                    {"$set": {"processing_status": "duplicate"}}
+                )
+                continue
+
             sentiment = analyze_sentiment(text_to_analyze)
             topic = assign_topic(text_to_analyze)
 
@@ -350,16 +372,7 @@ def process_articles():
                 "sentiment_analysis": [sentiment],
                 "original_id": article["_id"]
             }
-            
-            # Skip if already processed by link
-            if processed_collection.find_one({"link": base_doc["link"]}):
-                logging.info(f"Skipping duplicate: {base_doc['link']}")
-                raw_collection.update_one(
-                    {"_id": article["_id"]},
-                    {"$set": {"processing_status": "duplicate"}}
-                )
-                continue
-            
+
             processed_collection.insert_one(base_doc)
 
             raw_collection.update_one(

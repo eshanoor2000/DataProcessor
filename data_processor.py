@@ -7,6 +7,8 @@ from datetime import datetime
 import re
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import nltk
+nltk.download('vader_lexicon')
 from rapidfuzz import fuzz
 import torch
 from sentence_transformers import SentenceTransformer, util
@@ -398,6 +400,11 @@ def process_articles():
 
 def send_email(subject, body):
     try:
+        logging.info(f"Sending email to {EMAIL_CONFIG['receiver_email']}")
+        logging.debug(f"Subject: {subject}")
+        logging.debug(f"Body: {body}")
+        logging.debug(f"SMTP: {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
+
         msg = MIMEMultipart()
         msg["From"] = EMAIL_CONFIG["sender_email"]
         msg["To"] = EMAIL_CONFIG["receiver_email"]

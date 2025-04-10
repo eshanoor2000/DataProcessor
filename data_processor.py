@@ -315,8 +315,8 @@ def process_articles():
     processed_collection = get_collection(PROCESSED_COLLECTION)
 
     #change this back when done testing
-    yesterday = datetime.utcnow().date() - timedelta(days=1)
-    today_str = yesterday.isoformat()
+    today = datetime.utcnow().date()
+    today_str = today.isoformat()
     query = {
         "processing_status": "pending",
         "scraped_date": {"$regex": f"^{today_str}"},
@@ -447,6 +447,22 @@ def send_no_articles_email():
     )
     send_email(subject, body)
 
+def send_monthly_volume_alert():
+    collection = get_collection(PROCESSED_COLLECTION)
+    today = datetime.utcnow()
+    first_day = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    count = collection.count_documents({
+        "scraped_date": {
+            "$gte": first_day.isoformat()
+        }
+    })
+
+    if count >= 5:
+        subject = f"Monthly Article Threshold Met - {count} Articles"
+        body = f"{count} articles have been processed this month so far.\n\nKeep an eye on content trends!"
+        send_email(subject, body)
+
 def validate_db_connection():
     try:
         client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -472,6 +488,8 @@ if __name__ == "__main__":
         else:
             logging.info("No articles to process today.")
             send_no_articles_email()
+
+        send_monthly_volume_alert()
 
     except Exception as e:
         logging.error(f"Processing failed: {e}")

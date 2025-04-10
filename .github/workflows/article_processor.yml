@@ -2,7 +2,7 @@ name: Monthly Article Processor
 
 on:
   schedule:
-    - cron: '00 19 1 * *'  # 7:00 PM UTC on the 9th
+    - cron: '00 19 1 * *'  # 7:00 PM UTC on the 1st
   workflow_dispatch:
 
 jobs:

@@ -4,6 +4,7 @@ import time
 import sys
 import logging
 from datetime import datetime
+from datetime import timedelta
 import re
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -408,10 +409,10 @@ def send_email(subject, body):
             logging.warning(f"Missing email config values: {missing_keys}. Skipping email.")
             return
 
-        logging.info(f"Sending email to {EMAIL_CONFIG['receiver_email']}")
+        logging.info(f"Sending email to {EMAIL_CONFIG['EMAIL_RECEIVER']}")
         logging.debug(f"Subject: {subject}")
         logging.debug(f"Body: {body}")
-        logging.debug(f"SMTP: {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
+        logging.debug(f"SMTP: {EMAIL_CONFIG['SMTP_SERVER']}:{EMAIL_CONFIG['SMTP_PORT']}")
 
         msg = MIMEMultipart()
         msg["From"] = EMAIL_CONFIG["EMAIL_SENDER"]

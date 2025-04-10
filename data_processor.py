@@ -313,10 +313,13 @@ def process_articles():
     raw_collection = get_collection(RAW_COLLECTION)
     processed_collection = get_collection(PROCESSED_COLLECTION)
 
-    today_str = datetime.utcnow().date().isoformat()
+    #change this back when done testing
+    yesterday = datetime.utcnow().date() - timedelta(days=1)
+    today_str = yesterday.isoformat()
     query = {
         "processing_status": "pending",
-        "scraped_date": {"$regex": f"^{today_str}"}
+        "scraped_date": {"$regex": f"^{today_str}"},
+        "tags": {"$exists": True, "$ne": []}
     }
 
     logging.info(f"Processing articles scraped today: {today_str}")
@@ -400,6 +403,11 @@ def process_articles():
 
 def send_email(subject, body):
     try:
+        missing_keys = [k for k, v in EMAIL_CONFIG.items() if not v]
+        if missing_keys:
+            logging.warning(f"Missing email config values: {missing_keys}. Skipping email.")
+            return
+
         logging.info(f"Sending email to {EMAIL_CONFIG['receiver_email']}")
         logging.debug(f"Subject: {subject}")
         logging.debug(f"Body: {body}")
@@ -415,6 +423,7 @@ def send_email(subject, body):
             server.starttls()
             server.login(EMAIL_CONFIG["sender_email"], EMAIL_CONFIG["sender_password"])
             server.sendmail(EMAIL_CONFIG["sender_email"], EMAIL_CONFIG["receiver_email"], msg.as_string())
+
         logging.info("Email sent successfully.")
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
@@ -428,6 +437,15 @@ def send_success_email(processed_count):
 def send_error_email(error_message):
     send_email("Processing Script Encountered an Error", f"The processing script encountered an error:\n\n{error_message}")
 
+def send_no_articles_email():
+    subject = "No Articles Processed Today"
+    body = (
+        "The processor ran successfully,\n"
+        "but no new articles were found to process today.\n\n"
+        "This might mean the scraper found duplicates only, or the scrape job didn’t run."
+    )
+    send_email(subject, body)
+
 def validate_db_connection():
     try:
         client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -439,6 +457,9 @@ def validate_db_connection():
 # Main function
 if __name__ == "__main__":
     try:
+        from dotenv import load_dotenv
+        load_dotenv()  # Ensures secrets are loaded
+
         configure_logging()
         validate_db_connection()
 
@@ -449,11 +470,8 @@ if __name__ == "__main__":
             send_success_email(processed_count)
         else:
             logging.info("No articles to process today.")
-            send_email(
-                subject="No Articles Processed Today",
-                body="The processor ran successfully, but no new articles were found to process today."
-            )
-            
+            send_no_articles_email()
+
     except Exception as e:
         logging.error(f"Processing failed: {e}")
         send_error_email(str(e))

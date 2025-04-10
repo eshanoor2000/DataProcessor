@@ -414,15 +414,15 @@ def send_email(subject, body):
         logging.debug(f"SMTP: {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
 
         msg = MIMEMultipart()
-        msg["From"] = EMAIL_CONFIG["sender_email"]
-        msg["To"] = EMAIL_CONFIG["receiver_email"]
+        msg["From"] = EMAIL_CONFIG["EMAIL_SENDER"]
+        msg["To"] = EMAIL_CONFIG["EMAIL_RECEIVER"]
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"]) as server:
+        with smtplib.SMTP(EMAIL_CONFIG["SMTP_SERVER"], EMAIL_CONFIG["SMTP_PORT"]) as server:
             server.starttls()
-            server.login(EMAIL_CONFIG["sender_email"], EMAIL_CONFIG["sender_password"])
-            server.sendmail(EMAIL_CONFIG["sender_email"], EMAIL_CONFIG["receiver_email"], msg.as_string())
+            server.login(EMAIL_CONFIG["EMAIL_SENDER"], EMAIL_CONFIG["EMAIL_PASSWORD"])
+            server.sendmail(EMAIL_CONFIG["EMAIL_SENDER"], EMAIL_CONFIG["EMAIL_RECEIVER"], msg.as_string())
 
         logging.info("Email sent successfully.")
     except Exception as e:

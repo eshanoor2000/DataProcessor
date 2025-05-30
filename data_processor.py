@@ -22,6 +22,8 @@ import smtplib
 from email.message import EmailMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import spacy
+from collections import Counter
 
 # Logging Configuration
 def configure_logging():
@@ -91,12 +93,12 @@ def check_memory():
 # Sentiment analysis models with lazy loading and cleanup
 _sentiment_models = {}
 
-def get_bertweet_model():
-    if "bertweet" not in _sentiment_models:
+def get_roberta_model():
+    if "roberta" not in _sentiment_models:
         try:
-            _sentiment_models["bertweet"] = {
+            _sentiment_models["roberta"] = {
                 "tokenizer": AutoTokenizer.from_pretrained(
-                    "finiteautomata/bertweet-base-sentiment-analysis",
+                    "cardiffnlp/twitter-roberta-base-sentiment-latest",
                     device_map="auto",
                     torch_dtype=torch.float16
                 )
@@ -105,17 +107,17 @@ def get_bertweet_model():
             if check_memory() > 60:
                 clear_memory()
             
-            _sentiment_models["bertweet"]["model"] = AutoModelForSequenceClassification.from_pretrained(
-                "finiteautomata/bertweet-base-sentiment-analysis",
+            _sentiment_models["roberta"]["model"] = AutoModelForSequenceClassification.from_pretrained(
+                "cardiffnlp/twitter-roberta-base-sentiment-latest",
                 device_map="auto",
                 torch_dtype=torch.float16
             )
         except Exception as e:
-            logging.error(f"Failed to load BERTweet model: {e}")
-            if "bertweet" in _sentiment_models:
-                del _sentiment_models["bertweet"]
+            logging.error(f"Failed to load RoBERTa model: {e}")
+            if "roberta" in _sentiment_models:
+                del _sentiment_models["roberta"]
             raise
-    return _sentiment_models["bertweet"]
+    return _sentiment_models["roberta"]
 
 def get_vader_analyzer():
     if not hasattr(get_vader_analyzer, "analyzer"):
@@ -123,16 +125,267 @@ def get_vader_analyzer():
     return get_vader_analyzer.analyzer
 
 def clear_sentiment_models():
-    if "bertweet" in _sentiment_models:
-        del _sentiment_models["bertweet"]["model"]
-        del _sentiment_models["bertweet"]["tokenizer"]
-        _sentiment_models.pop("bertweet", None)
+    if "roberta" in _sentiment_models:
+        del _sentiment_models["roberta"]["model"]
+        del _sentiment_models["roberta"]["tokenizer"]
+        _sentiment_models.pop("roberta", None)
     torch.cuda.empty_cache()
 
 def get_topic_model():
     if not hasattr(get_topic_model, "model"):
-        get_topic_model.model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+        get_topic_model.model = SentenceTransformer("all-mpnet-base-v2", device="cpu")
     return get_topic_model.model
+
+# --- New Topic Tagging Logic ---
+# Rich topic anchors with description, keywords, and examples
+TOPIC_ANCHORS = {
+    "Records": {
+        "description": "Issues with requesting or receiving Condo documents and information, including financials, meeting minutes, and records of decisions about the condo. Condominium corporations create, maintain, and provide records to owners, purchasers, and mortgagees on request.",
+        "keywords": ["record", "document", "financial", "access", "AGM", "annual general meeting", "status certificate", "lists and addresses of owners", "contract", "budget", "reserve fund", "copy of returns", "notice of change", "ballot"],
+        "examples": [
+            "How do I access condo records and financial documents?",
+            "The board is refusing to provide AGM minutes.",
+            "Condo owners have a right to access some records, but not all."
+        ]
+    },
+    "Noise": {
+        "description": "Concerns about persistent or disruptive sounds coming from neighbours or common areas in condominium. Common sources are another resident, a utility, an amenity, piping, ventilation, or external source such as construction.",
+        "keywords": ["noise", "loud", "music", "banging", "stomping", "disruption", "loud footsteps", "loud talking or arguing", "slamming of doors", "pet making noise", "loud music and tv", "drilling", "hammering"],
+        "examples": [
+            "Loud music from my neighbour is constant.",
+            "There is banging and stomping above me every night.",
+            "When sound becomes persistent or excessively loud."
+        ]
+    },
+    "Vibration": {
+        "description": "Issues related to physical vibrations or tremors identifiable by feel that affect comfort or safety in a unit.",
+        "keywords": ["vibration", "shaking", "tremors", "construction", "movement"],
+        "examples": [
+            "My floor shakes when someone walks upstairs.",
+            "Tremors from nearby construction are disturbing residents.",
+            "Tremors through the walls or floors can disrupt quality of life."
+        ]
+    },
+    "Condo managers": {
+        "description": "Issues with condo management including delays, no responses, or unprofessional behavior.",
+        "keywords": ["management", "condo manager", "manager", "no response", "ignored", "inaction", "abuse of power", "mismanagement", "bad leadership"],
+        "examples": [
+            "The condo manager is ignoring my complaints.",
+            "I submitted a request and got no response from management.",
+            "Inaction by management can affect day-to-day operations."
+        ]
+    },
+    "Pets & animals": {
+        "description": "Complaints related to pets, including noise, leash rules, and disturbances.",
+        "keywords": ["pet", "animal", "bark", "off-leash", "pet causing disturbance", "dangerous pet", "illegal pet"],
+        "examples": [
+            "My neighbour's dog barks all day.",
+            "There are complaints about pets being off-leash in hallways.",
+            "Even the most lovable companions can disrupt peace and quiet."
+        ]
+    },
+    "Parking & storage": {
+        "description": "Issues involving parking spaces, storage lockers, and misuse or theft.",
+        "keywords": ["parking spot", "storage", "locker", "assigned spot", "theft", "park a car"],
+        "examples": [
+            "Someone keeps parking in my assigned spot.",
+            "My storage locker was broken into.",
+            "Issues arise when you're dealing with limited space."
+        ]
+    },
+    "Smoke & vapour": {
+        "description": "Concerns about the transmission of smoke or vapour between units.",
+        "keywords": ["smoke", "cannabis", "tobacco", "vapour", "vent", "seep"],
+        "examples": [
+            "Cannabis smoke is entering my unit from the hallway.",
+            "The smell of tobacco is coming through the vents.",
+            "When tobacco, cannabis or other vapours seep into other units."
+        ]
+    },
+    "Odours": {
+        "description": "Unpleasant or persistent smells in common areas or units.",
+        "keywords": ["odour", "smell", "spice", "sewage", "unpleasant", "odours caused by cannabis", "smell caused by pet"],
+        "examples": [
+            "The hallway constantly smells of strong spices.",
+            "There's a sewage-like odour near my unit.",
+            "Unpleasant smells can be a nuisance for other occupants."
+        ]
+    },
+    "Light": {
+        "description": "Disruptions caused by excessive or inadequate lighting in or around the condo building.",
+        "keywords": ["light", "bright", "flickering", "security light", "disruptive"],
+        "examples": [
+            "Bright security lights are shining into my bedroom.",
+            "Common area lighting is flickering and disruptive.",
+            "Too bright? Too dim? There may be a simple solution."
+        ]
+    },
+    "Vehicles": {
+        "description": "Concerns about vehicle operation in garages or near the condo, including safety and idling.",
+        "keywords": ["vehicle", "speeding", "idling", "garage", "dangerous driving", "entrance"],
+        "examples": [
+            "Residents are speeding in the underground garage.",
+            "Cars are idling too long near building entrances.",
+            "From idling cars to dangerous driving, see what rules apply."
+        ]
+    },
+    "Settlement Agreements": {
+        "description": "Non-compliance with decisions or agreements made through the Condo Authority Tribunal (CAT).",
+        "keywords": ["settlement", "agreement", "CAT", "compliance", "ignored", "tribunal", "resolve issue"],
+        "examples": [
+            "The other party isn't complying with our CAT settlement.",
+            "We reached an agreement but it's being ignored.",
+            "Steps to take when someone doesn't comply with your Condo Tribunal settlement agreement."
+        ]
+    },
+    "Harassment": {
+        "description": "Experiencing threatening, discriminatory, or inappropriate behavior from others in the condo.",
+        "keywords": ["harassment", "threatening", "discrimination", "unwelcome", "remark", "bullying", "verbal confrontation", "physical confrontation"],
+        "examples": [
+            "A neighbour is making discriminatory remarks toward me.",
+            "I feel threatened by repeated interactions with another resident.",
+            "Unwelcome, threatening or discriminatory interactions with other residents."
+        ]
+    },
+    "Infestation": {
+        "description": "Presence of mold or unwanted animal pests such as insects, rodents, or birds within the condo building.",
+        "keywords": ["infestation", "cockroach", "mice", "mould", "bedbug", "pest", "bacteria", "fungus"],
+        "examples": [
+            "There are cockroaches in the stairwell.",
+            "My unit has mice and the board won't help.",
+            "From mice and mould to birds and bedbugs, infestation is a serious issue."
+        ]
+    },
+    "Short-term rentals": {
+        "description": "Concerns about temporary rentals like Airbnb affecting condo security and atmosphere.",
+        "keywords": ["Airbnb", "rent", "short term stay", "sublease", "tenant"],
+        "examples": [
+            "My neighbour is running an Airbnb in their unit.",
+            "There are constant strangers entering and leaving the unit next door.",
+            "What to do when short-term rentals do not follow the condo rules."
+        ]
+    },
+    "Meetings": {
+        "description": "Issues surrounding the scheduling, cancellation, or transparency of condo meetings.",
+        "keywords": ["meeting", "AGM", "minutes", "notice", "cancelled"],
+        "examples": [
+            "The AGM was cancelled without notice.",
+            "Meeting minutes were never distributed.",
+            "Meetings are an important way for condo communities to come together transparently."
+        ]
+    },
+    "Other": {
+        "description": "Any concern that doesn't clearly fall under one of the listed categories.",
+        "keywords": ["other"],
+        "examples": [
+            "My issue doesn't fall into any of the standard categories.",
+            "This problem doesn't seem to be listed anywhere.",
+            "Any issue that does not fit the predefined categories."
+        ]
+    },
+    "Fee Increases & Special Assessments": {
+        "description": "Concerns about unexpected or unaffordable increases to monthly condo fees or lump-sum special assessments, involving lack of transparency, limited payment options, or poor communication about financial planning.",
+        "keywords": ["fee", "special assessment", "maintenance fee", "increase", "unexpected cost", "financial burden", "payment plan", "assessment notice", "cost of repairs", "budget shortfall"],
+        "examples": [
+            "The board imposed a $40,000 special assessment without warning.",
+            "Our condo fees went up 25% in a single year.",
+            "We weren't given any payment plan options for the special assessment."
+        ]
+    },
+    "Building Safety & Maintenance Neglect": {
+        "description": "Issues arising from unsafe or deteriorating building conditions, often due to delayed or avoided maintenance. ",
+        "keywords": ["safety", "structural", "leak", "mould", "exposed wire", "damaged", "repair", "maintenance backlog", "hazard", "crack", "disrepair", "unsafe condition"],
+        "examples": [
+            "There are cracks in the walls and the ceiling leaks every time it rains.",
+            "Our stairwells have exposed wires and broken lights.",
+            "Maintenance has been ignored for years and the building is falling apart."
+        ]
+    },
+    "Board Election Abuse & Proxy Fraud": {
+        "description": "Problems related to how condo board elections are conducted, such as forged proxies, ineligible board members, lack of transparency in vote counting, or abuse of electronic voting systems.",
+        "keywords": ["election", "proxy", "fraud", "vote", "ballot", "forgery", "electronic voting", "board takeover", "illegitimate director", "voting irregularity"],
+        "examples": [
+            "Board members were elected using forged proxy forms.",
+            "One director doesn't even live in the building but controls all votes.",
+            "Our board has been hijacked through unfair election practices."
+        ]
+    },
+    "Financial Mismanagement & Transparency": {
+        "description": "Concerns about how condo funds are used or reported, including undisclosed loans, lack of access to financial records, misuse of budgets, and decisions made without owner knowledge or approval.",
+        "keywords": ["loan", "financial abuse", "budget misuse", "unauthorized spending", "transparency", "financial decision", "hidden expense", "no disclosure", "audit", "oversight", "mismanagement"],
+        "examples": [
+            "The board took out a $3 million loan without telling the owners.",
+            "We suspect financial abuse but the board won't share budget details.",
+            "Funds are being used for unclear or unapproved projects."
+        ]
+    },
+    "Security & Surveillance Misuse": {
+        "description": "Issues where surveillance or security measures are perceived as excessive, misused, or invasive.",
+        "keywords": ["security", "surveillance", "camera", "monitored", "WhatsApp group", "privacy", "patrol", "CCTV", "guard", "feeling watched", "security abuse"],
+        "examples": [
+            "Residents are being watched constantly through hallway cameras.",
+            "Security uses a WhatsApp group to track residents' behavior.",
+            "Our building feels more like a prison than a home."
+        ]
+    }
+}
+
+# Load spaCy's English language model
+_nlp = None
+def get_nlp():
+    global _nlp
+    if _nlp is None:
+        _nlp = spacy.load("en_core_web_sm")
+    return _nlp
+
+def lemmatize_text(text):
+    nlp = get_nlp()
+    doc = nlp(text)
+    return " ".join([token.lemma_.lower() for token in doc if not token.is_punct and not token.is_space])
+
+def lemmatize_list(text_list):
+    return [lemmatize_text(text) for text in text_list]
+
+def lemmatize_topic_anchors(data):
+    for topic, content in data.items():
+        if "keywords" in content:
+            content["keywords"] = lemmatize_list(content["keywords"])
+        if "examples" in content:
+            content["examples"] = lemmatize_list(content["examples"])
+    return data
+
+# Precompute lemmatized topic anchors and topic embeddings
+LEMMATIZED_TOPIC_ANCHORS = lemmatize_topic_anchors(json.loads(json.dumps(TOPIC_ANCHORS)))
+_TOPIC_EMBEDDINGS = None
+def get_topic_embeddings():
+    global _TOPIC_EMBEDDINGS
+    if _TOPIC_EMBEDDINGS is None:
+        model = get_topic_model()
+        _TOPIC_EMBEDDINGS = {
+            topic: model.encode(
+                " ".join(data["keywords"] + data["examples"] + [data["description"]]),
+                convert_to_tensor=True
+            )
+            for topic, data in LEMMATIZED_TOPIC_ANCHORS.items()
+        }
+    return _TOPIC_EMBEDDINGS
+
+def assign_topic(text, threshold=0.45):
+    if not text:
+        return ["Other"]
+    model = get_topic_model()
+    topic_embeddings = get_topic_embeddings()
+    lemmatized_text = lemmatize_text(text)
+    embedding = model.encode(lemmatized_text, convert_to_tensor=True)
+    matched_topics = []
+    for topic, topic_embedding in topic_embeddings.items():
+        sim_score = util.cos_sim(embedding, topic_embedding).item()
+        if sim_score >= threshold:
+            matched_topics.append({"topic": topic, "score": round(sim_score, 4)})
+    matched_topics.sort(key=lambda x: x['score'], reverse=True)
+    if not matched_topics:
+        return ["Other"]
+    return [item['topic'] for item in matched_topics]
 
 def clean_text(text):
     """Clean text by removing unwanted characters and ads"""
@@ -147,166 +400,122 @@ def clean_text(text):
     
     return text.strip()
 
-def analyze_sentiment(text):
-    """Analyze sentiment using both VADER and BERTweet"""
+def extract_sentences(text, tags):
+    """Extract sentences containing tags or fuzzy matches"""
+    doc = get_nlp()(text)
+    exact = [s.text for s in doc.sents if any(t.lower() in s.text.lower() for t in tags)]
+    if exact:
+        return exact
+    fuzzy = []
+    for s in doc.sents:
+        if any(fuzz.partial_ratio(t.lower(), s.text.lower()) >= 90 for t in tags):
+            fuzzy.append(s.text)
+    return fuzzy or [text]
+
+def classify_sentiment(text):
+    """Classify sentiment using Twitter-RoBERTa"""
     try:
-        # First try with VADER (lightweight)
-        vader_scores = get_vader_analyzer().polarity_scores(text)
+        model = get_roberta_model()
+        enc = model["tokenizer"](text, return_tensors="pt", truncation=True, max_length=512)
+        with torch.no_grad():
+            out = model["model"](**enc)
+        scores = torch.nn.functional.softmax(out.logits, dim=-1)[0]
+        idx = scores.argmax().item()
+        labels = ["negative", "neutral", "positive"]
+        return labels[idx], float(scores[idx])
+    except Exception as e:
+        logging.error(f"Sentiment classification failed: {e}")
+        return "neutral", 0.0
+
+def aggregate_sentiment(sentiment_analyses):
+    """Aggregate multiple sentiment analyses into a single result"""
+    if not sentiment_analyses:
+        return {"label": "neutral", "score": 0.0}
+    
+    label_counts = Counter()
+    label_score_sums = Counter()
+    total_score = 0.0
+    
+    for sa in sentiment_analyses:
+        label = sa["label"]
+        score = sa["score"]
+        label_counts[label] += 1
+        label_score_sums[label] += score
+        total_score += score
+    
+    def key_for(label):
+        return (label_counts[label], label_score_sums[label] / label_counts[label])
+    
+    dominant_label = max(label_counts, key=key_for)
+    avg_score = total_score / len(sentiment_analyses)
+    
+    return {
+        "label": dominant_label,
+        "score": round(avg_score, 4)
+    }
+
+def analyze_sentiment(text, tags):
+    """Analyze sentiment using Twitter-RoBERTa with sentence extraction"""
+    try:
+        # Extract relevant sentences
+        sentences = extract_sentences(text, tags)
         
-        # Only use BERTweet if text is complex enough
-        if len(text.split()) > 10:
-            try:
-                model = get_bertweet_model()
-                # Remove the character limit and just use truncation
-                inputs = model["tokenizer"](text, 
-                                         return_tensors="pt", 
-                                         truncation=True)
-                outputs = model["model"](**inputs)
-                probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-                
-                bertweet_scores = {
-                    "positive": probs[0][2].item(),
-                    "neutral": probs[0][1].item(),
-                    "negative": probs[0][0].item(),
-                    "compound": (probs[0][2].item() - probs[0][0].item())
-                }
-            except Exception as e:
-                logging.warning(f"BERTweet failed: {e}")
-                bertweet_scores = None
-        else:
-            bertweet_scores = None
-            
+        # Analyze each sentence
+        sentiment_analyses = []
+        for sentence in sentences:
+            label, score = classify_sentiment(sentence)
+            sentiment_analyses.append({
+                "text": sentence,
+                "label": label,
+                "score": round(score, 4)
+            })
+        
+        # Aggregate results
+        aggregated = aggregate_sentiment(sentiment_analyses)
+        
         return {
-            "vader": vader_scores,
-            "bertweet": bertweet_scores,
-            "final_sentiment": determine_final_sentiment(vader_scores, bertweet_scores)
+            "sentiment_analyses": sentiment_analyses,
+            "aggregated": aggregated
         }
     except Exception as e:
         logging.error(f"Sentiment analysis failed: {e}")
-        return None
+        return {
+            "sentiment_analyses": [],
+            "aggregated": {"label": "neutral", "score": 0.0}
+        }
 
-def determine_final_sentiment(vader_scores, bertweet_scores):
-    """Determine final sentiment based on both models"""
-    if bertweet_scores:
-        # Use BERTweet if available and confident
-        if max(bertweet_scores.values()) > 0.7:
-            if bertweet_scores["positive"] > bertweet_scores["negative"]:
-                return "positive"
-            else:
-                return "negative"
-    
-    # Fall back to VADER
-    if vader_scores["compound"] >= 0.05:
-        return "positive"
-    elif vader_scores["compound"] <= -0.05:
-        return "negative"
-    else:
-        return "neutral"
+# Add mapping from topic to grouping
+ISSUE_GROUPING_MAP = {
+    "Condo managers": "Governance & Management",
+    "Meetings": "Governance & Management",
+    "Records": "Governance & Management",
+    "Board Election Abuse & Proxy Fraud": "Governance & Management",
+    "Settlement Agreements": "Governance & Management",
+    "Fee Increases & Special Assessments": "Financial Issues",
+    "Financial Mismanagement & Transparency": "Financial Issues",
+    "Harassment": "Resident Behaviour & Conflict",
+    "Short-term rentals": "Resident Behaviour & Conflict",
+    "Pets & animals": "Resident Behaviour & Conflict",
+    "Vehicles": "Resident Behaviour & Conflict",
+    "Noise": "Nuisance & Disruption",
+    "Odours": "Nuisance & Disruption",
+    "Smoke & vapour": "Nuisance & Disruption",
+    "Vibration": "Nuisance & Disruption",
+    "Light": "Nuisance & Disruption",
+    "Infestation": "Health, Safety & Infrastructure",
+    "Building Safety & Maintenance Neglect": "Health, Safety & Infrastructure",
+    "Parking & storage": "Health, Safety & Infrastructure",
+    "Security & Surveillance Misuse": "Health, Safety & Infrastructure",
+    "Other": "Other"
+}
 
-def assign_topic(text, threshold=0.45):
-    if not text:
-        return "Other"
-
-    model = get_topic_model()
-    topic_anchors = {
-        "Records": [
-            "How do I access condo records and financial documents?",
-            "The board is refusing to provide AGM minutes.",
-            "Condo owners have a right to access some records, but not all."
-        ],
-        "Noise": [
-            "Loud music from my neighbour is constant.",
-            "There's banging and stomping above me every night.",
-            "When sound becomes persistent or excessively loud."
-        ],
-        "Vibration": [
-            "My floor shakes when someone walks upstairs.",
-            "Tremors from nearby construction are disturbing residents.",
-            "Tremors through the walls or floors can disrupt quality of life."
-        ],
-        "Condo managers": [
-            "The condo manager is ignoring my complaints.",
-            "I submitted a request and got no response from management.",
-            "Inaction by management can affect day-to-day operations."
-        ],
-        "Pets & animals": [
-            "My neighbour's dog barks all day.",
-            "There are complaints about pets being off-leash in hallways.",
-            "Even the most lovable companions can disrupt peace and quiet."
-        ],
-        "Parking & storage": [
-            "Someone keeps parking in my assigned spot.",
-            "My storage locker was broken into.",
-            "Issues arise when you're dealing with limited space."
-        ],
-        "Smoke & vapour": [
-            "Cannabis smoke is entering my unit from the hallway.",
-            "The smell of tobacco is coming through the vents.",
-            "When tobacco, cannabis or other vapours seep into other units."
-        ],
-        "Odours": [
-            "The hallway constantly smells of strong spices.",
-            "There's a sewage-like odour near my unit.",
-            "Unpleasant smells can be a nuisance for other occupants."
-        ],
-        "Light": [
-            "Bright security lights are shining into my bedroom.",
-            "Common area lighting is flickering and disruptive.",
-            "Too bright? Too dim? There may be a simple solution."
-        ],
-        "Vehicles": [
-            "Residents are speeding in the underground garage.",
-            "Cars are idling too long near building entrances.",
-            "From idling cars to dangerous driving, see what rules apply."
-        ],
-        "Settlement Agreements": [
-            "The other party isn't complying with our CAT settlement.",
-            "We reached an agreement but it's being ignored.",
-            "Steps to take when someone doesn't comply with your Condo Tribunal settlement agreement."
-        ],
-        "Harassment": [
-            "A neighbour is making discriminatory remarks toward me.",
-            "I feel threatened by repeated interactions with another resident.",
-            "Unwelcome, threatening or discriminatory interactions with other residents."
-        ],
-        "Infestation": [
-            "There are cockroaches in the stairwell.",
-            "My unit has mice and the board won't help.",
-            "From mice and mould to birds and bedbugs, infestation is a serious issue."
-        ],
-        "Short-term rentals": [
-            "My neighbour is running an Airbnb in their unit.",
-            "There are constant strangers entering and leaving the unit next door.",
-            "What to do when short-term rentals don't follow the condo rules."
-        ],
-        "Meetings": [
-            "The AGM was cancelled without notice.",
-            "Meeting minutes were never distributed.",
-            "Meetings are an important way for condo communities to come together transparently."
-        ],
-        "Other": [
-            "My issue doesn't fall into any of the standard categories.",
-            "This problem doesn't seem to be listed anywhere.",
-            "Any issue that does not fit the predefined categories."
-        ]
-    }
-    
-    topic_embeddings = {
-        topic: model.encode(anchors, convert_to_tensor=True).mean(dim=0)
-        for topic, anchors in topic_anchors.items()
-    }
-    
-    embedding = model.encode(text, convert_to_tensor=True)
-    best_score = -1
-    best_topic = "Other"
-
-    for topic, anchor_embedding in topic_embeddings.items():
-        score = util.cos_sim(embedding, anchor_embedding).item()
-        if score > best_score:
-            best_score = score
-            best_topic = topic
-
-    return best_topic if best_score >= threshold else "Other"
+def assign_issue_grouping(topics):
+    # topics is a list of topic names
+    groupings = set()
+    for topic in topics:
+        group = ISSUE_GROUPING_MAP.get(topic, "Other")
+        groupings.add(group)
+    return list(groupings)
 
 # Article Processing Function
 def process_articles():
@@ -314,7 +523,6 @@ def process_articles():
     raw_collection = get_collection(RAW_COLLECTION)
     processed_collection = get_collection(PROCESSED_COLLECTION)
 
-    #change this back when done testing
     today = datetime.utcnow().date()
     today_str = today.isoformat()
     query = {
@@ -338,8 +546,9 @@ def process_articles():
             title = clean_text(article.get("title", ""))
             content = clean_text(article.get("content", ""))
             text_to_analyze = f"{title} {content}"
+            tags = article.get("tags", [])
 
-            # Check for duplicate in raw collection (excluding self)
+            # Check for duplicates
             if raw_collection.find_one({
                 "link": article.get("link"),
                 "_id": {"$ne": article["_id"]}
@@ -351,7 +560,6 @@ def process_articles():
                 )
                 continue
 
-            # Check for duplicate in processed collection
             if processed_collection.find_one({"link": article.get("link")}):
                 logging.info(f"Skipping duplicate in processed: {article.get('link')}")
                 raw_collection.update_one(
@@ -360,22 +568,26 @@ def process_articles():
                 )
                 continue
 
-            sentiment = analyze_sentiment(text_to_analyze)
-            topic = assign_topic(text_to_analyze)
+            # Analyze sentiment and topics
+            sentiment_result = analyze_sentiment(text_to_analyze, tags)
+            topics = assign_topic(text_to_analyze)
+            issue_groupings = assign_issue_grouping(topics)
 
             base_doc = {
                 "title": title,
                 "link": article.get("link", ""),
                 "published_date": article.get("published_date", ""),
                 "content": content,
-                "tags": article.get("tags", []),
+                "tags": tags,
                 "source": "RSS Feeds" if article.get("source", "").strip().lower() == "rss" else article.get("source", ""),
                 "subreddit": article.get("subreddit", None),
                 "upvotes": article.get("upvotes", None),
                 "comments": article.get("comments", None),
                 "scraped_date": article.get("scraped_date", datetime.utcnow().isoformat()),
-                "assigned_issue": topic,
-                "sentiment_analysis": [sentiment],
+                "assigned_issue": topics,
+                "issue_grouping": issue_groupings,
+                "sentiment_analysis": sentiment_result["sentiment_analyses"],
+                "aggregated_sentiment": sentiment_result["aggregated"],
                 "original_id": article["_id"]
             }
 
@@ -443,7 +655,7 @@ def send_no_articles_email():
     body = (
         "The processor ran successfully,\n"
         "but no new articles were found to process today.\n\n"
-        "This might mean the scraper found duplicates only, or the scrape job didn’t run."
+        "This might mean the scraper found duplicates only, or the scrape job didn't run."
     )
     send_email(subject, body)
 

@@ -7,4 +7,4 @@ psutil
 python-dotenv
 rapidfuzz
 torch
-spacy
+spacy>=3.7.1

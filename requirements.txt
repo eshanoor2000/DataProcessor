@@ -1,4 +1,3 @@
-nltk
 torch
 transformers
 sentence-transformers
@@ -6,5 +5,4 @@ pymongo
 psutil
 python-dotenv
 rapidfuzz
-torch
 spacy>=3.7.1

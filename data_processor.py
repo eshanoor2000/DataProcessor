@@ -115,18 +115,6 @@ def get_roberta_model():
             raise
     return _sentiment_models["roberta"]
 
-def get_vader_analyzer():
-    if not hasattr(get_vader_analyzer, "analyzer"):
-        get_vader_analyzer.analyzer = SentimentIntensityAnalyzer()
-    return get_vader_analyzer.analyzer
-
-def clear_sentiment_models():
-    if "roberta" in _sentiment_models:
-        del _sentiment_models["roberta"]["model"]
-        del _sentiment_models["roberta"]["tokenizer"]
-        _sentiment_models.pop("roberta", None)
-    torch.cuda.empty_cache()
-
 def get_topic_model():
     if not hasattr(get_topic_model, "model"):
         get_topic_model.model = SentenceTransformer("all-mpnet-base-v2", device="cpu")

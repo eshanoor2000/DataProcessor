@@ -8,5 +8,4 @@ python-dotenv
 rapidfuzz
 nltk
 torch
-spacy>=3.0.0 @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
-en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
+spacy>=3.0.0

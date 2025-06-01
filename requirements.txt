@@ -6,6 +6,5 @@ pymongo
 psutil
 python-dotenv
 rapidfuzz
-nltk
 torch
 spacy>=3.0.0

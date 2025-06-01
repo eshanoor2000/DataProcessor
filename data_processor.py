@@ -6,10 +6,6 @@ import logging
 from datetime import datetime
 from datetime import timedelta
 import re
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-import nltk
-nltk.download('vader_lexicon')
 from rapidfuzz import fuzz
 import torch
 from sentence_transformers import SentenceTransformer, util

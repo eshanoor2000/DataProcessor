@@ -560,19 +560,16 @@ def process_articles():
             base_doc = {
                 "title": title,
                 "link": article.get("link", ""),
-                "published_date": article.get("published_date", ""),
                 "content": content,
+                "published_date": article.get("published_date", ""),
                 "tags": tags,
                 "source": "RSS Feeds" if article.get("source", "").strip().lower() == "rss" else article.get("source", ""),
                 "subreddit": article.get("subreddit", None),
                 "upvotes": article.get("upvotes", None),
                 "comments": article.get("comments", None),
-                "scraped_date": article.get("scraped_date", datetime.utcnow().isoformat()),
-                "assigned_issue": topics,
-                "issue_grouping": issue_groupings,
                 "sentiment_analysis": sentiment_result["sentiment_analyses"],
-                "aggregated_sentiment": sentiment_result["aggregated"],
-                "original_id": article["_id"]
+                "assigned_issue": topics,
+                "issue_grouping": issue_groupings
             }
 
             processed_collection.insert_one(base_doc)

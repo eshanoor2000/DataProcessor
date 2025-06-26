@@ -21,6 +21,17 @@ from email.mime.text import MIMEText
 import spacy
 from collections import Counter
 
+# --- Configuration from environment variables ---
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB = os.getenv("MONGO_DB", "brand_monitoring")
+RAW_COLLECTION = os.getenv("RAW_COLLECTION", "raw_articles")
+PROCESSED_COLLECTION = os.getenv("PROCESSED_COLLECTION", "processed_articles")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+
 # Logging Configuration
 def configure_logging():
     logging.basicConfig(
@@ -31,12 +42,6 @@ def configure_logging():
 
 # Initialize logging
 configure_logging()
-
-# Database configuration
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB = os.getenv("MONGO_DB", "brand_monitoring")
-RAW_COLLECTION = os.getenv("RAW_COLLECTION", "raw_articles")
-PROCESSED_COLLECTION = os.getenv("PROCESSED_COLLECTION", "processed_articles")
 
 UNICODE_REPLACEMENTS = {
     "\u2013": "-",
@@ -60,11 +65,11 @@ AD_MESSAGES = [
 ]
 
 EMAIL_CONFIG = {
-    "EMAIL_SENDER": os.getenv("EMAIL_SENDER"),
-    "EMAIL_PASSWORD": os.getenv("EMAIL_PASSWORD"),
-    "EMAIL_RECEIVER": os.getenv("EMAIL_RECEIVER"),
-    "SMTP_SERVER": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
-    "SMTP_PORT": int(os.getenv("SMTP_PORT", 587)),
+    "EMAIL_SENDER": EMAIL_SENDER,
+    "EMAIL_PASSWORD": EMAIL_PASSWORD,
+    "EMAIL_RECEIVER": EMAIL_RECEIVER,
+    "SMTP_SERVER": SMTP_SERVER,
+    "SMTP_PORT": SMTP_PORT,
 }
 
 def get_collection(collection_name):
@@ -94,20 +99,25 @@ def get_roberta_model():
         try:
             _sentiment_models["roberta"] = {
                 "tokenizer": AutoTokenizer.from_pretrained(
-                    "cardiffnlp/twitter-roberta-base-sentiment-latest",
-                    device_map="auto",
-                    torch_dtype=torch.float16
+                    "cardiffnlp/twitter-roberta-base-sentiment-latest"
                 )
             }
             
             if check_memory() > 60:
                 clear_memory()
             
-            _sentiment_models["roberta"]["model"] = AutoModelForSequenceClassification.from_pretrained(
-                "cardiffnlp/twitter-roberta-base-sentiment-latest",
-                device_map="auto",
-                torch_dtype=torch.float16
-            )
+            # Try loading with safetensors first to avoid torch.load security issue
+            try:
+                _sentiment_models["roberta"]["model"] = AutoModelForSequenceClassification.from_pretrained(
+                    "cardiffnlp/twitter-roberta-base-sentiment-latest",
+                    use_safetensors=True
+                )
+            except Exception as safetensors_error:
+                logging.warning(f"Failed to load with safetensors: {safetensors_error}")
+                # Fallback to regular loading
+                _sentiment_models["roberta"]["model"] = AutoModelForSequenceClassification.from_pretrained(
+                    "cardiffnlp/twitter-roberta-base-sentiment-latest"
+                )
         except Exception as e:
             logging.error(f"Failed to load RoBERTa model: {e}")
             if "roberta" in _sentiment_models:
@@ -354,7 +364,8 @@ def get_topic_embeddings():
         }
     return _TOPIC_EMBEDDINGS
 
-def assign_topic(text, threshold=0.45):
+def assign_topic(text, threshold=0.5, max_topics=3):
+    """Assign up to max_topics above the similarity threshold (multiple topics allowed, always include 'Other' if none)"""
     if not text:
         return ["Other"]
     model = get_topic_model()
@@ -365,11 +376,11 @@ def assign_topic(text, threshold=0.45):
     for topic, topic_embedding in topic_embeddings.items():
         sim_score = util.cos_sim(embedding, topic_embedding).item()
         if sim_score >= threshold:
-            matched_topics.append({"topic": topic, "score": round(sim_score, 4)})
-    matched_topics.sort(key=lambda x: x['score'], reverse=True)
+            matched_topics.append((topic, sim_score))
+    matched_topics.sort(key=lambda x: x[1], reverse=True)
     if not matched_topics:
         return ["Other"]
-    return [item['topic'] for item in matched_topics]
+    return [item[0] for item in matched_topics[:max_topics]]
 
 def clean_text(text):
     """Clean text by removing unwanted characters and ads"""
@@ -411,39 +422,13 @@ def classify_sentiment(text):
         logging.error(f"Sentiment classification failed: {e}")
         return "neutral", 0.0
 
-def aggregate_sentiment(sentiment_analyses):
-    """Aggregate multiple sentiment analyses into a single result"""
-    if not sentiment_analyses:
-        return {"label": "neutral", "score": 0.0}
-    
-    label_counts = Counter()
-    label_score_sums = Counter()
-    total_score = 0.0
-    
-    for sa in sentiment_analyses:
-        label = sa["label"]
-        score = sa["score"]
-        label_counts[label] += 1
-        label_score_sums[label] += score
-        total_score += score
-    
-    def key_for(label):
-        return (label_counts[label], label_score_sums[label] / label_counts[label])
-    
-    dominant_label = max(label_counts, key=key_for)
-    avg_score = total_score / len(sentiment_analyses)
-    
-    return {
-        "label": dominant_label,
-        "score": round(avg_score, 4)
-    }
+
 
 def analyze_sentiment(text, tags):
-    """Analyze sentiment using Twitter-RoBERTa with sentence extraction"""
+    """Analyze sentiment using Twitter-RoBERTa with sentence extraction and robust aggregation. Returns array format for compatibility."""
     try:
         # Extract relevant sentences
         sentences = extract_sentences(text, tags)
-        
         # Analyze each sentence
         sentiment_analyses = []
         for sentence in sentences:
@@ -453,20 +438,46 @@ def analyze_sentiment(text, tags):
                 "label": label,
                 "score": round(score, 4)
             })
+        # If no sentences, analyze the whole text
+        if not sentiment_analyses:
+            label, score = classify_sentiment(text)
+            sentiment_analyses.append({
+                "text": text,
+                "label": label,
+                "score": round(score, 4)
+            })
         
-        # Aggregate results
-        aggregated = aggregate_sentiment(sentiment_analyses)
-        
-        return {
-            "sentiment_analyses": sentiment_analyses,
-            "aggregated": aggregated
-        }
+        # Aggregate multiple sentiment analyses into a single result (like sort_json script)
+        if len(sentiment_analyses) > 1:
+            label_counts = Counter()
+            label_score_sums = Counter()
+            total_score = 0.0
+
+            for sa in sentiment_analyses:
+                lbl = sa['label']
+                score = sa['score']
+                label_counts[lbl] += 1
+                label_score_sums[lbl] += score
+                total_score += score
+
+            def key_for(lbl):
+                return (label_counts[lbl], label_score_sums[lbl] / label_counts[lbl])
+
+            dominant_label = max(label_counts, key=key_for)
+            avg_score = total_score / len(sentiment_analyses)
+            combined_text = " | ".join(sa['text'].strip() for sa in sentiment_analyses)
+
+            return [{
+                'text': combined_text,
+                'label': dominant_label,
+                'score': round(avg_score, 4)
+            }]
+        else:
+            return sentiment_analyses
+            
     except Exception as e:
         logging.error(f"Sentiment analysis failed: {e}")
-        return {
-            "sentiment_analyses": [],
-            "aggregated": {"label": "neutral", "score": 0.0}
-        }
+        return [{"text": text, "label": "neutral", "score": 0.0}]
 
 # Add mapping from topic to grouping
 ISSUE_GROUPING_MAP = {
@@ -501,26 +512,52 @@ def assign_issue_grouping(topics):
         groupings.add(group)
     return list(groupings)
 
+def normalize_article(article, processed_fields):
+    # Required fields must be present and non-empty
+    required_fields = [
+        "title", "link", "content", "published_date", "scraped_date", "tags", "source", "sentiment_analysis", "assigned_issue", "issue_grouping"
+    ]
+    for field in required_fields:
+        if not article.get(field):
+            return None
+    # subreddit, upvotes, comments can be null
+    doc = {
+        "title": article["title"],
+        "link": article["link"],
+        "content": article["content"],
+        "published_date": article["published_date"],
+        "tags": article["tags"],
+        "source": article["source"],
+        "subreddit": article.get("subreddit", None),
+        "upvotes": article.get("upvotes", None),
+        "comments": article.get("comments", None),
+        "scraped_date": article["scraped_date"],
+        "sentiment_analysis": article["sentiment_analysis"],
+        "assigned_issue": article["assigned_issue"],
+        "issue_grouping": article["issue_grouping"]
+    }
+    return doc
+
 # Article Processing Function
 def process_articles():
-    """Process only articles scraped today (based on scraped_date)"""
+    """Process all articles scraped from March 6, 2025 up to today (inclusive)"""
     raw_collection = get_collection(RAW_COLLECTION)
     processed_collection = get_collection(PROCESSED_COLLECTION)
 
-    today = datetime.utcnow().date()
-    today_str = today.isoformat()
+    start_date = datetime(2025, 3, 6)
+    today = datetime.utcnow()
     query = {
         "processing_status": "pending",
-        "scraped_date": {"$regex": f"^{today_str}"},
+        "scraped_date": {"$gte": start_date.isoformat(), "$lte": today.isoformat()},
         "tags": {"$exists": True, "$ne": []}
     }
 
-    logging.info(f"Processing articles scraped today: {today_str}")
+    logging.info(f"Processing articles scraped from {start_date.date()} to {today.date()}")
 
     pending_articles = list(raw_collection.find(query))
 
     if not pending_articles:
-        logging.info("No pending articles found for today.")
+        logging.info("No pending articles found for the specified date range.")
         return 0
 
     processed_count = 0
@@ -531,6 +568,17 @@ def process_articles():
             content = clean_text(article.get("content", ""))
             text_to_analyze = f"{title} {content}"
             tags = article.get("tags", [])
+            source = article.get("source", "")
+            # Normalize source
+            if source.strip().lower() in ["bing", "web scraping"]:
+                source = "Other"
+            elif source.strip().lower() == "tocondo":
+                source = "Toronto Condo News"
+            subreddit = article.get("subreddit", None)
+            upvotes = article.get("upvotes", None)
+            comments = article.get("comments", None)
+            published_date = article.get("published_date", "")
+            scraped_date = article.get("scraped_date", "")
 
             # Check for duplicates
             if raw_collection.find_one({
@@ -561,18 +609,26 @@ def process_articles():
                 "title": title,
                 "link": article.get("link", ""),
                 "content": content,
-                "published_date": article.get("published_date", ""),
+                "published_date": published_date,
                 "tags": tags,
-                "source": "RSS Feeds" if article.get("source", "").strip().lower() == "rss" else article.get("source", ""),
-                "subreddit": article.get("subreddit", None),
-                "upvotes": article.get("upvotes", None),
-                "comments": article.get("comments", None),
-                "sentiment_analysis": sentiment_result["sentiment_analyses"],
+                "source": source,
+                "subreddit": subreddit,
+                "upvotes": upvotes,
+                "comments": comments,
+                "scraped_date": scraped_date,
+                "sentiment_analysis": sentiment_result,
                 "assigned_issue": topics,
                 "issue_grouping": issue_groupings
             }
 
-            processed_collection.insert_one(base_doc)
+            normalized_doc = normalize_article(base_doc, [
+                "title", "link", "content", "published_date", "tags", "source", "subreddit", "upvotes", "comments", "scraped_date", "sentiment_analysis", "assigned_issue", "issue_grouping"
+            ])
+            if not normalized_doc:
+                logging.warning(f"Skipping article due to missing required fields: {article.get('link')}")
+                continue
+
+            processed_collection.insert_one(normalized_doc)
 
             raw_collection.update_one(
                 {"_id": article["_id"]},

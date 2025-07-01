@@ -580,19 +580,29 @@ def process_articles():
             published_date = article.get("published_date", "")
             scraped_date = article.get("scraped_date", "")
 
-            # Check for duplicates
-            if raw_collection.find_one({
-                "link": article.get("link"),
-                "_id": {"$ne": article["_id"]}
-            }):
+            # --- RAW COLLECTION DUPLICATE CHECK (new) ---
+            if article.get("source", "").lower() == "tocondo":
+                is_duplicate_raw = raw_collection.find_one({
+                    "link": article.get("link"),
+                    "published_date": article.get("published_date"),
+                    "_id": {"$ne": article["_id"]}
+                })
+            else:
+                is_duplicate_raw = raw_collection.find_one({
+                    "link": article.get("link"),
+                    "_id": {"$ne": article["_id"]}
+                })
+
+            if is_duplicate_raw:
                 logging.info(f"Duplicate found in raw collection: {article.get('link')}")
                 raw_collection.update_one(
                     {"_id": article["_id"]},
                     {"$set": {"processing_status": "duplicate"}}
                 )
                 continue
+            # --- END RAW COLLECTION DUPLICATE CHECK ---
 
-            # For TOCondo, allow same link with new published_date
+            # --- PROCESSED COLLECTION DUPLICATE CHECK ---
             if article.get("source", "").lower() == "tocondo":
                 is_duplicate = processed_collection.find_one({
                     "link": article.get("link"),
@@ -610,7 +620,9 @@ def process_articles():
                     {"$set": {"processing_status": "duplicate"}}
                 )
                 continue
-
+                
+            # --- END PROCESSED COLLECTION DUPLICATE CHECK ---
+            
             # Analyze sentiment and topics
             sentiment_result = analyze_sentiment(text_to_analyze, tags)
             topics = assign_topic(text_to_analyze)

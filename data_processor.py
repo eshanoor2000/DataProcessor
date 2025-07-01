@@ -564,23 +564,7 @@ def process_articles():
 
     for article in pending_articles:
         try:
-            title = clean_text(article.get("title", ""))
-            content = clean_text(article.get("content", ""))
-            text_to_analyze = f"{title} {content}"
-            tags = article.get("tags", [])
-            source = article.get("source", "")
-            # Normalize source
-            if source.strip().lower() in ["bing", "web scraping"]:
-                source = "Other"
-            elif source.strip().lower() == "tocondo":
-                source = "Toronto Condo News"
-            subreddit = article.get("subreddit", None)
-            upvotes = article.get("upvotes", None)
-            comments = article.get("comments", None)
-            published_date = article.get("published_date", "")
-            scraped_date = article.get("scraped_date", "")
-
-            # --- RAW COLLECTION DUPLICATE CHECK (new) ---
+            # ---- 1. RAW duplicate detection (should be at the very top) ----
             if article.get("source", "").lower() == "tocondo":
                 is_duplicate_raw = raw_collection.find_one({
                     "link": article.get("link"),
@@ -600,9 +584,8 @@ def process_articles():
                     {"$set": {"processing_status": "duplicate"}}
                 )
                 continue
-            # --- END RAW COLLECTION DUPLICATE CHECK ---
 
-            # --- PROCESSED COLLECTION DUPLICATE CHECK ---
+            # ---- 2. Also skip if in processed already (current logic) ----
             if article.get("source", "").lower() == "tocondo":
                 is_duplicate = processed_collection.find_one({
                     "link": article.get("link"),
@@ -612,7 +595,7 @@ def process_articles():
                 is_duplicate = processed_collection.find_one({
                     "link": article.get("link")
                 })
-            
+
             if is_duplicate:
                 logging.info(f"Skipping duplicate in processed: {article.get('link')}")
                 raw_collection.update_one(
@@ -620,8 +603,23 @@ def process_articles():
                     {"$set": {"processing_status": "duplicate"}}
                 )
                 continue
-                
-            # --- END PROCESSED COLLECTION DUPLICATE CHECK ---
+
+            # ---- 3. Your processing logic ----
+            title = clean_text(article.get("title", ""))
+            content = clean_text(article.get("content", ""))
+            text_to_analyze = f"{title} {content}"
+            tags = article.get("tags", [])
+            source = article.get("source", "")
+            # Normalize source
+            if source.strip().lower() in ["bing", "web scraping"]:
+                source = "Other"
+            elif source.strip().lower() == "tocondo":
+                source = "Toronto Condo News"
+            subreddit = article.get("subreddit", None)
+            upvotes = article.get("upvotes", None)
+            comments = article.get("comments", None)
+            published_date = article.get("published_date", "")
+            scraped_date = article.get("scraped_date", "")
             
             # Analyze sentiment and topics
             sentiment_result = analyze_sentiment(text_to_analyze, tags)

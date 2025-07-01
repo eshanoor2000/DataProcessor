@@ -592,7 +592,18 @@ def process_articles():
                 )
                 continue
 
-            if processed_collection.find_one({"link": article.get("link")}):
+            # For TOCondo, allow same link with new published_date
+            if article.get("source", "").lower() == "tocondo":
+                is_duplicate = processed_collection.find_one({
+                    "link": article.get("link"),
+                    "published_date": article.get("published_date")
+                })
+            else:
+                is_duplicate = processed_collection.find_one({
+                    "link": article.get("link")
+                })
+            
+            if is_duplicate:
                 logging.info(f"Skipping duplicate in processed: {article.get('link')}")
                 raw_collection.update_one(
                     {"_id": article["_id"]},

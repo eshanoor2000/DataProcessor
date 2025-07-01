@@ -564,7 +564,7 @@ def process_articles():
 
     for article in pending_articles:
         try:
-            # ---- 1. RAW duplicate detection (should be at the very top) ----
+            # Duplicate detection
             if article.get("source", "").lower() == "tocondo":
                 is_duplicate_raw = raw_collection.find_one({
                     "link": article.get("link"),
@@ -585,7 +585,6 @@ def process_articles():
                 )
                 continue
 
-            # ---- 2. Also skip if in processed already (current logic) ----
             if article.get("source", "").lower() == "tocondo":
                 is_duplicate = processed_collection.find_one({
                     "link": article.get("link"),
@@ -604,7 +603,7 @@ def process_articles():
                 )
                 continue
 
-            # ---- 3. Your processing logic ----
+            # Processing logic
             title = clean_text(article.get("title", ""))
             content = clean_text(article.get("content", ""))
             text_to_analyze = f"{title} {content}"
